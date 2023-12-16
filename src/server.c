@@ -22,28 +22,117 @@
 #define OUTPUT_TEMPLATE "../checker/output/out-XXXXXX"
 #endif
 
+#define CUSTOM_ERR_CODE -1
+
 static int server_fd;
 static int client_fd;
+static struct lib *global_lib;
+
+void get_config(int argc, char **argv)
+{
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], argv[i]) == 0) {
+			if (strcmp(argv[i], "max_connections") == 0) {
+				settings.max_connections = atoi(argv[i + 1]);
+				return;
+			}
+			if (strcmp(argv[i], "socket_type") == 0) {
+				if (strcmp(argv[i + 1], "unix") == 0) {
+					settings.socket_type = UNIX;
+					return;
+				} else if (strcmp(argv[i + 1], "inet") == 0) {
+					settings.socket_type = INET;
+					return;
+				} else {
+					printf("Invalid socket type: %s\n", argv[i + 1]);
+					exit(CUSTOM_ERR_CODE);
+				}
+			}
+		}
+	}
+
+	char *env = getenv("max_connections");
+	if (env) {
+		settings.max_connections = atoi(env);
+		return;
+	}
+
+	env = getenv("socket_type");
+	if (env) {
+		if (strcmp(env, "unix") == 0) {
+			settings.socket_type = UNIX;
+			return;
+		} else if (strcmp(env, "inet") == 0) {
+			settings.socket_type = INET;
+			return;
+		} else {
+			printf("Invalid socket type: %s\n", env);
+			exit(CUSTOM_ERR_CODE);
+		}
+	}
+}
 
 static void cleanup()
 {
 	puts("\nClosing server...");
-	while (waitpid(-1, NULL, 0) > 0)
+	while (waitpid(CUSTOM_ERR_CODE, NULL, 0) > 0)
 		;
 	close_socket(server_fd);
 	close_socket(client_fd);
 	int ret = remove(SOCKET_NAME);
-	if (ret == -1) {
+	if (ret == CUSTOM_ERR_CODE) {
 		perror("remove");
-		exit(-1);
+		exit(CUSTOM_ERR_CODE);
 	}
 
 	exit(0);
 }
 
+/**
+ * Build error message and write it to outputfile.
+ */
+void print_error(char *errmsg)
+{
+	FILE *fp = fopen(global_lib->outputfile, "wt");
+	char error_buffer[BUFSIZ] = {0};
+	sprintf(error_buffer, "Error: %s ", global_lib->libname);
+	if (strlen(global_lib->funcname) > 0) {
+		strcat(error_buffer, global_lib->funcname);
+		strcat(error_buffer, " ");
+
+		if (strlen(global_lib->filename) > 0) {
+			strcat(error_buffer, global_lib->filename);
+			strcat(error_buffer, " ");
+		}
+	}
+
+	if (errmsg) {
+		fprintf(fp, "%scould not be executed (%s).\n", error_buffer, errmsg);
+	} else {
+		fprintf(fp, "%scould not be executed.\n", error_buffer);
+	}
+	fclose(fp);
+	send(client_fd, global_lib->outputfile, strlen(global_lib->outputfile), 0);
+	close_socket(client_fd);
+}
+
 static void handle_sigint()
 {
 	cleanup();
+}
+
+static void handle_segfault()
+{
+	print_error("segfault");
+	exit(CUSTOM_ERR_CODE);
+}
+
+static void handle_error_exit(int status, void *arg)
+{
+	(void)arg;
+	if (status != 0 && status != CUSTOM_ERR_CODE) {
+		print_error("exit code");
+	}
 }
 
 static void quit(int status)
@@ -55,42 +144,22 @@ static void quit(int status)
 static int lib_prehooks(struct lib *lib)
 {
 	/* Create outputfile name. */
-	lib->outputfile = malloc(sizeof(OUTPUT_TEMPLATE));
+	const size_t len = strlen(OUTPUT_TEMPLATE) + 1;
+	lib->outputfile = malloc(len);
 	if (!lib->outputfile) {
 		perror("malloc");
-		return -1;
+		return CUSTOM_ERR_CODE;
 	}
-	strncpy(lib->outputfile, OUTPUT_TEMPLATE, sizeof(OUTPUT_TEMPLATE));
+	strncpy(lib->outputfile, OUTPUT_TEMPLATE, len);
 
 	/* Create outputfile. */
 	int outfile = mkstemp(lib->outputfile);
-	if (outfile == -1) {
+	if (outfile == CUSTOM_ERR_CODE) {
 		perror("mkstemp");
-		return -1;
+		return CUSTOM_ERR_CODE;
 	}
 
 	return 0;
-}
-
-void print_error(struct lib *lib)
-{
-	FILE *fp = fopen(lib->outputfile, "wt");
-	char error_buffer[BUFSIZ] = {0};
-	sprintf(error_buffer, "Error: %s ", lib->libname);
-	if (strlen(lib->funcname) > 0) {
-		strcat(error_buffer, lib->funcname);
-		strcat(error_buffer, " ");
-
-		if (strlen(lib->filename) > 0) {
-			strcat(error_buffer, lib->filename);
-			strcat(error_buffer, " ");
-		}
-	}
-
-	fprintf(fp, "%scould not be executed.\n", error_buffer);
-	fclose(fp);
-	send(client_fd, lib->outputfile, strlen(lib->outputfile), 0);
-	close_socket(client_fd);
 }
 
 static int lib_load(struct lib *lib)
@@ -99,17 +168,16 @@ static int lib_load(struct lib *lib)
 
 	if (!lib->handle) {
 		perror("dlopen");
-		print_error(lib);
-		return -1;
+		print_error(NULL);
+		return CUSTOM_ERR_CODE;
 	}
 
 	(void)dlerror();
 	void *addr = dlsym(lib->handle, lib->funcname);
 
 	if (!addr) {
-		FILE *fp = fopen(lib->outputfile, "wt");
-		print_error(lib);
-		return -1;
+		print_error(NULL);
+		return CUSTOM_ERR_CODE;
 	}
 
 	if (lib->filename) {
@@ -127,11 +195,15 @@ static int lib_execute(struct lib *lib)
 		fflush(stdout);
 		int back = dup(STDOUT_FILENO);
 		dup2(fd, STDOUT_FILENO);
+
+		/* Handle function segfault. */
+		signal(SIGSEGV, handle_segfault);
+
 		lib->p_run(lib->filename);
+
 		fflush(stdout);
 		dup2(back, STDOUT_FILENO);
 		close(back);
-
 	} else {
 		lib->run();
 	}
@@ -147,6 +219,7 @@ static int lib_close(struct lib *lib)
 
 static int lib_posthooks(struct lib *lib)
 {
+	(void)lib;
 	return 0;
 }
 
@@ -179,18 +252,18 @@ static int parse_command(const char *buf, char *name, char *func, char *params)
 
 	ret = sscanf(buf, "%s %s %s", name, func, params);
 	if (ret < 0)
-		return -1;
+		return CUSTOM_ERR_CODE;
 
 	return ret;
 }
 
-void handle_client(int client_fd)
+void handle_client()
 {
 	char buf[BUFSIZE] = {0};
 
 	if (recv_socket(client_fd, buf, BUFSIZE) < 0) {
 		perror("recv err");
-		quit(-1);
+		quit(CUSTOM_ERR_CODE);
 	}
 
 	char name[BUFSIZ] = {0};
@@ -205,15 +278,16 @@ void handle_client(int client_fd)
 	}
 
 	struct lib lib = {.libname = name, .funcname = func, .filename = params};
+	global_lib = &lib;
 
 	if (lib_run(&lib) < 0) {
 		perror("run err");
-		quit(-1);
+		quit(CUSTOM_ERR_CODE);
 	}
 
 	if (send_socket(client_fd, lib.outputfile, strlen(lib.outputfile)) < 0) {
 		perror("send err");
-		quit(-1);
+		quit(CUSTOM_ERR_CODE);
 	}
 
 	close_socket(client_fd);
@@ -240,19 +314,21 @@ void init_server(struct sockaddr_un *addr, socklen_t addrlen)
 	}
 
 	int ret = bind(server_fd, (struct sockaddr *)addr, addrlen);
-	if (ret == -1) {
+	if (ret == CUSTOM_ERR_CODE) {
 		perror("bind");
-		quit(-1);
+		quit(CUSTOM_ERR_CODE);
 	}
 
-	if (listen(server_fd, MAX_CLIENTS) < 0) {
+	if (listen(server_fd, settings.max_connections) < 0) {
 		perror("listen");
-		quit(-1);
+		quit(CUSTOM_ERR_CODE);
 	}
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+	get_config(argc, argv);
+
 	struct sockaddr_un addr;
 	socklen_t addrlen = sizeof(addr);
 	init_server(&addr, addrlen);
@@ -261,20 +337,27 @@ int main(void)
 		int new_client_fd =
 			accept(server_fd, (struct sockaddr *)&addr, &addrlen);
 
-		if (new_client_fd == -1) {
+		if (new_client_fd == CUSTOM_ERR_CODE) {
 			perror("accept");
-			quit(-1);
+			quit(CUSTOM_ERR_CODE);
 		}
 
 		int ret = fork();
 		if (ret < 0) {
 			perror("fork");
-			quit(-1);
+			quit(CUSTOM_ERR_CODE);
 		}
 
 		if (ret == 0) {
+			/* Handle exiting with errors. */
+			ret = on_exit(handle_error_exit, NULL);
+			if (ret != 0) {
+				perror("on_exit");
+				quit(CUSTOM_ERR_CODE);
+			}
+
 			client_fd = new_client_fd;
-			handle_client(client_fd);
+			handle_client();
 			exit(0);
 		}
 		close_socket(new_client_fd);

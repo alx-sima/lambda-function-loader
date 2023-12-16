@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,10 +11,23 @@
 
 #include "ipc.h"
 
-#define PORT 5432
+int create_internet_socket(void)
+{
+	int ret = socket(AF_INET, SOCK_STREAM, 0);
+	if (ret == -1) {
+		perror("socket");
+		exit(-1);
+	}
+
+	return ret;
+}
 
 int create_socket(void)
 {
+	if (settings.socket_type == INET) {
+		return create_internet_socket();
+	}
+
 	int ret = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (ret == -1) {
 		perror("socket");
@@ -23,8 +37,24 @@ int create_socket(void)
 	return ret;
 }
 
+int connect_internet_socket(int fd)
+{
+	struct sockaddr_in sockaddr;
+	memset(&sockaddr, 0, sizeof(sockaddr));
+	sockaddr.sin_family = AF_INET;
+	sockaddr.sin_port = htons(settings.port);
+	sockaddr.sin_addr.s_addr = inet_addr(settings.hostname);
+
+	int ret = connect(fd, (struct sockaddr *)&sockaddr, sizeof(sockaddr));
+	return ret;
+}
+
 int connect_socket(int fd)
 {
+	if (settings.socket_type == INET) {
+		return connect_internet_socket(fd);
+	}
+
 	struct sockaddr_un sockaddr;
 	memset(&sockaddr, 0, sizeof(sockaddr));
 	sockaddr.sun_family = AF_UNIX;
@@ -47,7 +77,7 @@ ssize_t send_socket(int fd, const char *buf, size_t len)
 
 		sent += ret;
 	}
-	// printf("Sent: %s\n", buf);
+
 	return sent;
 }
 

@@ -3,6 +3,8 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include "ipc.h"
+
 /* lambda function without parameter */
 typedef void (*lambda_func_t)(void);
 
