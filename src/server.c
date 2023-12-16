@@ -91,10 +91,11 @@ static void cleanup()
 /**
  * Build error message and write it to outputfile.
  */
-void print_error(char *errmsg)
+void print_error()
 {
 	FILE *fp = fopen(global_lib->outputfile, "wt");
 	char error_buffer[BUFSIZ] = {0};
+
 	sprintf(error_buffer, "Error: %s ", global_lib->libname);
 	if (strlen(global_lib->funcname) > 0) {
 		strcat(error_buffer, global_lib->funcname);
@@ -105,12 +106,8 @@ void print_error(char *errmsg)
 			strcat(error_buffer, " ");
 		}
 	}
+	fprintf(fp, "%scould not be executed.\n", error_buffer);
 
-	if (errmsg) {
-		fprintf(fp, "%scould not be executed (%s).\n", error_buffer, errmsg);
-	} else {
-		fprintf(fp, "%scould not be executed.\n", error_buffer);
-	}
 	fclose(fp);
 	send(client_fd, global_lib->outputfile, strlen(global_lib->outputfile), 0);
 	close_socket(client_fd);
@@ -123,7 +120,8 @@ static void handle_sigint()
 
 static void handle_segfault()
 {
-	print_error("segfault");
+	puts("Segfault!");
+	send(client_fd, global_lib->outputfile, strlen(global_lib->outputfile), 0);
 	exit(CUSTOM_ERR_CODE);
 }
 
@@ -131,7 +129,9 @@ static void handle_error_exit(int status, void *arg)
 {
 	(void)arg;
 	if (status != 0 && status != CUSTOM_ERR_CODE) {
-		print_error("exit code");
+		puts("Non-zero exit code!");
+		send(client_fd, global_lib->outputfile, strlen(global_lib->outputfile),
+			 0);
 	}
 }
 
@@ -150,7 +150,7 @@ static int lib_prehooks(struct lib *lib)
 		perror("malloc");
 		return CUSTOM_ERR_CODE;
 	}
-	strncpy(lib->outputfile, OUTPUT_TEMPLATE, len);
+	strcpy(lib->outputfile, OUTPUT_TEMPLATE);
 
 	/* Create outputfile. */
 	int outfile = mkstemp(lib->outputfile);
@@ -168,7 +168,7 @@ static int lib_load(struct lib *lib)
 
 	if (!lib->handle) {
 		perror("dlopen");
-		print_error(NULL);
+		print_error();
 		return CUSTOM_ERR_CODE;
 	}
 
@@ -176,7 +176,7 @@ static int lib_load(struct lib *lib)
 	void *addr = dlsym(lib->handle, lib->funcname);
 
 	if (!addr) {
-		print_error(NULL);
+		print_error();
 		return CUSTOM_ERR_CODE;
 	}
 
