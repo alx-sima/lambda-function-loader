@@ -1,2 +1,4 @@
 output/
 ref/
+*.o
+*.so

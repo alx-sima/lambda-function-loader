@@ -47,7 +47,7 @@ ssize_t send_socket(int fd, const char *buf, size_t len)
 
 		sent += ret;
 	}
-	printf("Sent: %s\n", buf);
+	// printf("Sent: %s\n", buf);
 	return sent;
 }
 
@@ -64,7 +64,6 @@ ssize_t recv_socket(int fd, char *buf, size_t len)
 
 	received += ret;
 
-	printf("Received: %s\n", buf);
 	return received;
 }
 
